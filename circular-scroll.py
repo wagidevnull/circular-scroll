@@ -170,8 +170,10 @@ def calibrate(cfg, seconds, write):
     while dev.read_one():  # discard events queued before the start
         pass
     xs, ys = [], []
-    x = y = None
-    touching = False
+    # Seed state from the device: if a finger landed during the countdown, its
+    # BTN_TOUCH/position events were just discarded and won't be re-sent.
+    x, y = dev.absinfo(e.ABS_X).value, dev.absinfo(e.ABS_Y).value
+    touching = e.BTN_TOUCH in dev.active_keys()
     start = time.monotonic()
     end = start + seconds
     last_shown = None
