@@ -4,6 +4,8 @@ Ring-style **circular scrolling** for round touchpads on Linux — like the
 "wheel pad" on Panasonic Let's Note laptops — on **Wayland** (Hyprland, Sway,
 GNOME, KDE…) and X11.
 
+<p align="center"><img src="assets/demo.gif" alt="Animation: circling the edge of the touchpad scrolls the page; starting in the middle moves the pointer" width="560"></p>
+
 The old X11 Synaptics driver had circular scrolling built in, but libinput
 (which every modern desktop uses) does not. This small daemon adds it back.
 
@@ -18,8 +20,17 @@ Under the hood it grabs the touchpad, passes normal touches through to a
 virtual copy of the touchpad (so libinput still handles them), and turns ring
 touches into mouse-wheel events.
 
-Tested on a Panasonic Let's Note CF-SX4 (Synaptics PS/2 touchpad) running
-CachyOS + Hyprland. Should work with any touchpad, round or not.
+## Known working laptops
+
+| Laptop | Touchpad | Distro / desktop | Status |
+|---|---|---|---|
+| Panasonic Let's Note CF-SX4 | Synaptics PS/2 (round) | CachyOS + Hyprland | ✅ Works out of the box |
+| Panasonic Let's Note CF-S10 | — | — | 🧪 Testing |
+
+It should work with any touchpad, round or not. Tried it on another laptop?
+[Open an issue](https://github.com/wagidevnull/circular-scroll/issues/new) with
+your model, the touchpad name from `sudo circular-scroll --list`, your distro and
+desktop, and whether it worked out of the box — it'll be added to the list.
 
 ## Install
 
