@@ -25,7 +25,7 @@ touches into mouse-wheel events.
 | Laptop | Touchpad | Distro / desktop | Status |
 |---|---|---|---|
 | Panasonic Let's Note CF-SX4 | Synaptics PS/2 (round) | CachyOS + Hyprland | ✅ Works out of the box |
-| Panasonic Let's Note CF-S10 | — | — | 🧪 Testing |
+| Panasonic Let's Note CF-S10 | Synaptics PS/2 (round) | CachyOS + Hyprland | ✅ Works out of the box |
 
 It should work with any touchpad, round or not. Tried it on another laptop?
 [Open an issue](https://github.com/wagidevnull/circular-scroll/issues/new) with
