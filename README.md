@@ -7,7 +7,7 @@ GNOME, KDE…) and X11.
 <p align="center"><img src="assets/demo.gif" alt="Animation: circling the edge of the touchpad scrolls the page; starting in the middle moves the pointer" width="560"></p>
 
 The old X11 Synaptics driver had circular scrolling built in, but libinput
-(which every modern desktop uses) does not. This small daemon adds it back.
+(which every modern desktop uses) does not. This small daemon adds it back. Failover by design, if the daemon stops for any reason, the touchpad is released and allows normal operation.
 
 ## How it works
 
@@ -83,3 +83,13 @@ sudo systemctl stop circular-scroll && sudo circular-scroll --debug   # verbose
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=wagidevnull%2Fcircular-scroll&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=wagidevnull/circular-scroll&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=wagidevnull/circular-scroll&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=wagidevnull/circular-scroll&type=date&legend=top-left" />
+ </picture>
+</a>
