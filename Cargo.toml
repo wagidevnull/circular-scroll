@@ -1,0 +1,21 @@
+[package]
+name = "circular-scroll"
+version = "2.0.0"
+edition = "2024"
+description = "Ring-style circular scrolling for round touchpads on Linux"
+license = "MIT"
+authors = ["Wagi <wagi@wagi.lol>"]
+repository = "https://github.com/wagidevnull/circular-scroll"
+
+[dependencies]
+evdev = "0.13"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = 3

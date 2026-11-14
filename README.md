@@ -18,7 +18,8 @@ The old X11 Synaptics driver had circular scrolling built in, but libinput
 
 Under the hood it grabs the touchpad, passes normal touches through to a
 virtual copy of the touchpad (so libinput still handles them), and turns ring
-touches into mouse-wheel events.
+touches into mouse-wheel events. It's written in Rust and uses next to no CPU
+or memory.
 
 ## Known working laptops
 
@@ -34,7 +35,8 @@ desktop, and whether it worked out of the box — it'll be added to the list.
 
 ## Install
 
-Requires systemd and Python 3.11+.
+Requires systemd. That's it: circular-scroll is a single small program with no
+dependencies.
 
 ```sh
 git clone https://github.com/wagidevnull/circular-scroll.git
@@ -44,8 +46,10 @@ cd circular-scroll
 
 The installer will:
 
-1. install `python-evdev` with your package manager (pacman, apt, dnf or zypper),
-2. install the daemon and a systemd service,
+1. build circular-scroll if you have Rust installed, or otherwise download the
+   prebuilt binary for your machine (x86_64 or aarch64) from the
+   [latest release](https://github.com/wagidevnull/circular-scroll/releases/latest),
+2. install it and a systemd service,
 3. walk you through a 15-second calibration: trace around the very edge of the
    touchpad so it learns where the edge of your pad really is,
 4. start the service and enable it at boot.
@@ -70,6 +74,16 @@ Edit `/etc/circular-scroll.toml`, then `sudo systemctl restart circular-scroll`.
 sudo systemctl stop circular-scroll # pause (touchpad goes back to normal)
 journalctl -u circular-scroll -f    # logs
 sudo systemctl stop circular-scroll && sudo circular-scroll --debug   # verbose
+```
+
+Updating: `git pull && ./install.sh`. Your calibration and settings are kept.
+
+## Building and testing
+
+```sh
+cargo build --release                         # target/release/circular-scroll
+cargo test                                    # scrolling logic
+sudo python3 tests/e2e.py                     # end-to-end with a fake touchpad (needs python-evdev)
 ```
 
 ## Notes

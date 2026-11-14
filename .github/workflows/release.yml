@@ -1,0 +1,53 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (musl target, for a static binary)
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          rustup update stable && rustup default stable
+          rustup target add ${{ matrix.arch }}-unknown-linux-musl
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: |
+          cargo build --release --locked --target ${{ matrix.arch }}-unknown-linux-musl
+          mkdir dist
+          cp target/${{ matrix.arch }}-unknown-linux-musl/release/circular-scroll dist/circular-scroll-${{ matrix.arch }}
+          cd dist && sha256sum circular-scroll-${{ matrix.arch }} > circular-scroll-${{ matrix.arch }}.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: circular-scroll-${{ matrix.arch }}
+          path: dist/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
