@@ -144,7 +144,24 @@ def test_daemon(tmp):
         check(len([ev for ev in c if ev.code == e.ABS_X]) == 11, f"middle touch reaches the clone ({len(c)} events)")
         check(not w, "middle touch doesn't scroll")
 
-        # 2. Touch in the ring, 90 degrees clockwise: scrolls down 4 notches, pointer untouched.
+        # 2. Clipping the ring, then moving inward before scrolling: becomes a pointer
+        #    touch that starts where the finger is when it leaves the ring.
+        path = [point(0.755 - i * 0.03, i * 0.2) for i in range(16)]  # r 0.755 -> 0.305
+        handoff = next(p for p in path if math.hypot(p[0] - 3000, p[1] - 3000) / 3000 < 0.60)
+        x, y = path[0]
+        emit(pad, [(e.EV_KEY, e.BTN_TOUCH, 1), (e.EV_KEY, e.BTN_TOOL_FINGER, 1), (e.EV_ABS, e.ABS_X, x), (e.EV_ABS, e.ABS_Y, y)])
+        for x, y in path[1:]:
+            emit(pad, [(e.EV_ABS, e.ABS_X, x), (e.EV_ABS, e.ABS_Y, y)])
+        emit(pad, [(e.EV_KEY, e.BTN_TOUCH, 0), (e.EV_KEY, e.BTN_TOOL_FINGER, 0)])
+        c, w = drain(clone), drain(wheel)
+        xs = [ev.value for ev in c if ev.code == e.ABS_X]
+        check(not w, "clipping the ring and moving inward doesn't scroll")
+        check(bool(xs) and xs[0] == handoff[0] and xs[-1] == path[-1][0],
+              f"...and moves the pointer from where it left the ring (x {xs[:1]} -> {xs[-1:]}, want {handoff[0]} -> {path[-1][0]})")
+        check([ev.value for ev in c if ev.code == e.BTN_TOUCH] == [1, 0], "...as one normal touch")
+
+        # 3. Touch in the ring, 90 degrees clockwise: scrolls down 4 notches, pointer untouched.
+        #    The last 2 frames before lift-off (1 degree each) are dropped: 88 degrees.
         x, y = point(0.9, 0)
         emit(pad, [(e.EV_KEY, e.BTN_TOUCH, 1), (e.EV_KEY, e.BTN_TOOL_FINGER, 1), (e.EV_ABS, e.ABS_X, x), (e.EV_ABS, e.ABS_Y, y)])
         for step in range(1, 91):
@@ -157,21 +174,21 @@ def test_daemon(tmp):
         notches = sum(ev.value for ev in w if ev.code == e.REL_WHEEL)
         hires = sum(ev.value for ev in w if ev.code == e.REL_WHEEL_HI_RES)
         check(notches == -4, f"90 degrees clockwise = 4 notches down (got {notches})")
-        check(abs(hires + 540) <= 2, f"hi-res total about -540 (got {hires})")
+        check(abs(hires + 528) <= 2, f"hi-res total about -528, lift-off frames dropped (got {hires})")
         check([(ev.code, ev.value) for ev in c] == [(e.BTN_LEFT, 1), (e.BTN_LEFT, 0)],
               "ring touch only passes button clicks to the clone")
 
-        # 3. Anticlockwise scrolls up.
+        # 4. Anticlockwise scrolls up (45 degrees, minus 2 dropped at lift-off).
         x, y = point(0.9, 0)
         emit(pad, [(e.EV_KEY, e.BTN_TOUCH, 1), (e.EV_KEY, e.BTN_TOOL_FINGER, 1), (e.EV_ABS, e.ABS_X, x), (e.EV_ABS, e.ABS_Y, y)])
-        for step in range(1, 41):
+        for step in range(1, 46):
             x, y = point(0.9, -step)
             emit(pad, [(e.EV_ABS, e.ABS_X, x), (e.EV_ABS, e.ABS_Y, y)])
         emit(pad, [(e.EV_KEY, e.BTN_TOUCH, 0), (e.EV_KEY, e.BTN_TOOL_FINGER, 0)])
         notches = sum(ev.value for ev in drain(wheel) if ev.code == e.REL_WHEEL)
-        check(notches == 2, f"40 degrees anticlockwise = 2 notches up (got {notches})")
+        check(notches == 2, f"45 degrees anticlockwise = 2 notches up (got {notches})")
 
-        # 4. Two fingers in the ring: normal touchpad behaviour.
+        # 5. Two fingers in the ring: normal touchpad behaviour.
         x, y = point(0.9, 0)
         emit(pad, [(e.EV_KEY, e.BTN_TOUCH, 1), (e.EV_KEY, e.BTN_TOOL_DOUBLETAP, 1), (e.EV_ABS, e.ABS_X, x), (e.EV_ABS, e.ABS_Y, y)])
         for step in range(1, 31):
@@ -184,7 +201,7 @@ def test_daemon(tmp):
         col.stop()
         check(not col.dropped, "no events were dropped while reading")
 
-        # 5. Stopping the daemon releases the pad.
+        # 6. Stopping the daemon releases the pad.
         proc.terminate()
         proc.wait(5)
         time.sleep(0.3)
@@ -201,6 +218,7 @@ def test_daemon(tmp):
         pad.close()
     check("using circular-scroll e2e pad" in log, "startup message names the device")
     check("scroll start at" in log and "scroll end" in log, "--debug logs scrolling")
+    check("handing touch to pointer" in log, "--debug logs the ring hand-off")
 
 
 def test_calibrate(tmp):

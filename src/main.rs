@@ -2,9 +2,10 @@
 //!
 //! Grabs the physical touchpad and re-emits its events on a virtual clone, so
 //! normal pointer, tap and gesture behaviour is untouched. A single-finger
-//! touch that starts in the outer ring of the pad is taken over: moving around
-//! the ring emits mouse-wheel events instead (clockwise = scroll down), until
-//! the finger lifts.
+//! touch that starts in the outer ring of the pad is held back: moving around
+//! the ring emits mouse-wheel events instead (clockwise = scroll down) until
+//! the finger lifts, but moving inward out of the ring before any scrolling
+//! makes it a normal touch.
 
 mod config;
 mod device;
@@ -189,6 +190,9 @@ fn run(cfg: &Config, debug: bool) -> Result<(), String> {
         degrees_per_notch: cfg.degrees_per_notch,
         reverse: cfg.reverse,
         min_track_radius: cfg.min_track_radius,
+        lift_ignore_frames: cfg.lift_ignore_frames as usize,
+        commit_degrees: cfg.commit_degrees,
+        ring_exit_margin: cfg.ring_exit_margin,
     };
     let mut router = Router::new(Scroller::new(geom, settings));
 

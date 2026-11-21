@@ -21,6 +21,12 @@ pub struct Config {
     pub reverse: bool,
     /// Ignore angle updates when the finger drifts this close to the centre.
     pub min_track_radius: f64,
+    /// Drop this many frames of scroll movement before lift-off. 0 = off.
+    pub lift_ignore_frames: u32,
+    /// Rotation before a ring touch starts scrolling.
+    pub commit_degrees: f64,
+    /// Moving this far inside ring_start before scrolling hands the touch to the pointer.
+    pub ring_exit_margin: f64,
 }
 
 impl Default for Config {
@@ -35,11 +41,14 @@ impl Default for Config {
             degrees_per_notch: 20.0,
             reverse: false,
             min_track_radius: 0.35,
+            lift_ignore_frames: 2,
+            commit_degrees: 10.0,
+            ring_exit_margin: 0.10,
         }
     }
 }
 
-const KEYS: [&str; 9] = [
+const KEYS: [&str; 12] = [
     "device_name",
     "center_x",
     "center_y",
@@ -49,6 +58,9 @@ const KEYS: [&str; 9] = [
     "degrees_per_notch",
     "reverse",
     "min_track_radius",
+    "lift_ignore_frames",
+    "commit_degrees",
+    "ring_exit_margin",
 ];
 
 fn comment(key: &str) -> Option<&'static str> {
@@ -59,6 +71,9 @@ fn comment(key: &str) -> Option<&'static str> {
         "degrees_per_notch" => "smaller = faster scrolling",
         "reverse" => "true: clockwise scrolls up",
         "min_track_radius" => "ignore movement this close to the centre while scrolling",
+        "lift_ignore_frames" => "drop this many frames of movement before lift-off; 0 = off",
+        "commit_degrees" => "rotation before a ring touch starts scrolling",
+        "ring_exit_margin" => "move this far inside the ring before scrolling -> pointer",
         _ => return None,
     })
 }
@@ -100,6 +115,14 @@ impl Config {
                 "ring_start" => cfg.ring_start = num()?,
                 "degrees_per_notch" => cfg.degrees_per_notch = num()?,
                 "min_track_radius" => cfg.min_track_radius = num()?,
+                "commit_degrees" => cfg.commit_degrees = num()?,
+                "ring_exit_margin" => cfg.ring_exit_margin = num()?,
+                "lift_ignore_frames" => {
+                    cfg.lift_ignore_frames = value
+                        .as_integer()
+                        .and_then(|i| u32::try_from(i).ok())
+                        .ok_or("lift_ignore_frames must be a whole number, 0 or more")?
+                }
                 "reverse" => {
                     cfg.reverse = value.as_bool().ok_or("reverse must be true or false")?
                 }
@@ -111,6 +134,9 @@ impl Config {
         }
         if cfg.degrees_per_notch <= 0.0 {
             return Err("degrees_per_notch must be greater than 0".into());
+        }
+        if cfg.commit_degrees < 0.0 || cfg.ring_exit_margin < 0.0 {
+            return Err("commit_degrees and ring_exit_margin can't be negative".into());
         }
         Ok(cfg)
     }
@@ -126,6 +152,9 @@ impl Config {
             "degrees_per_notch" => float(self.degrees_per_notch),
             "reverse" => self.reverse.to_string(),
             "min_track_radius" => float(self.min_track_radius),
+            "lift_ignore_frames" => self.lift_ignore_frames.to_string(),
+            "commit_degrees" => float(self.commit_degrees),
+            "ring_exit_margin" => float(self.ring_exit_margin),
             _ => unreachable!(),
         }
     }
@@ -191,6 +220,9 @@ mod tests {
             degrees_per_notch: 20.0,
             reverse: true,
             min_track_radius: 0.35,
+            lift_ignore_frames: 3,
+            commit_degrees: 7.5,
+            ring_exit_margin: 0.15,
         };
         assert_eq!(Config::parse(&cfg.to_toml()).unwrap(), cfg);
     }
@@ -223,6 +255,9 @@ min_track_radius = 0.35
     fn rejects_bad_types() {
         assert!(Config::parse("reverse = 1").is_err());
         assert!(Config::parse("ring_start = \"wide\"").is_err());
+        assert!(Config::parse("lift_ignore_frames = -1").is_err());
+        assert!(Config::parse("lift_ignore_frames = 1.5").is_err());
+        assert!(Config::parse("commit_degrees = -5").is_err());
     }
 
     #[test]

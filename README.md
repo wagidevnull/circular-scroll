@@ -13,6 +13,8 @@ The old X11 Synaptics driver had circular scrolling built in, but libinput
 
 - Start a touch **near the edge** of the touchpad and move around the ring:
   clockwise scrolls down, anticlockwise scrolls up, until you lift your finger.
+- If you clip the ring by accident and move inward before scrolling starts,
+  the touch turns back into normal pointer movement.
 - Touches that start anywhere else behave exactly as before — pointer movement,
   tap-to-click, two-finger scroll and gestures are untouched.
 
@@ -63,6 +65,9 @@ Edit `/etc/circular-scroll.toml`, then `sudo systemctl restart circular-scroll`.
 | `ring_start` | `0.70` | How far out a touch must start to scroll (fraction of the radius). Lower = wider ring. |
 | `degrees_per_notch` | `20.0` | Rotation per scroll step. Lower = faster scrolling. |
 | `reverse` | `false` | `true` makes clockwise scroll up. |
+| `commit_degrees` | `10.0` | How far (in degrees) a finger must go around the ring before scrolling starts. Until then, moving inward out of the ring turns the touch into normal pointer movement. |
+| `ring_exit_margin` | `0.10` | How far inside `ring_start` the finger must move for that hand-off. |
+| `lift_ignore_frames` | `2` | Scroll movement from this many touchpad frames before lift-off is dropped, so the wobble as your finger leaves the pad doesn't scroll. `0` = off. |
 | `device_name` | auto | Exact touchpad name, if auto-detection picks the wrong device. See `sudo circular-scroll --list`. |
 | `center_x/y`, `radius_x/y` | calibrated | Pad geometry in raw touchpad units. |
 

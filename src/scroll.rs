@@ -4,14 +4,21 @@
 //! `SYN_REPORT` it decides where the finished frame goes: to the virtual
 //! touchpad clone (normal touches) or into wheel events (ring touches).
 
-use evdev::{EventType, InputEvent, KeyCode, RelativeAxisCode, SynchronizationCode};
+use std::collections::{BTreeMap, VecDeque};
+
+use evdev::{
+    AbsoluteAxisCode, EventType, InputEvent, KeyCode, RelativeAxisCode, SynchronizationCode,
+};
 
 const EV_SYN: u16 = EventType::SYNCHRONIZATION.0;
 const EV_KEY: u16 = EventType::KEY.0;
 const EV_ABS: u16 = EventType::ABSOLUTE.0;
 const SYN_REPORT: u16 = SynchronizationCode::SYN_REPORT.0;
-const ABS_X: u16 = evdev::AbsoluteAxisCode::ABS_X.0;
-const ABS_Y: u16 = evdev::AbsoluteAxisCode::ABS_Y.0;
+const ABS_X: u16 = AbsoluteAxisCode::ABS_X.0;
+const ABS_Y: u16 = AbsoluteAxisCode::ABS_Y.0;
+const ABS_MT_SLOT: u16 = AbsoluteAxisCode::ABS_MT_SLOT.0;
+const ABS_MT_LAST: u16 = AbsoluteAxisCode::ABS_MT_TOOL_Y.0;
+const ABS_MT_TRACKING_ID: u16 = AbsoluteAxisCode::ABS_MT_TRACKING_ID.0;
 const BTN_TOUCH: u16 = KeyCode::BTN_TOUCH.0;
 const BUTTONS: [u16; 3] = [
     KeyCode::BTN_LEFT.0,
@@ -41,6 +48,14 @@ pub struct Settings {
     pub degrees_per_notch: f64,
     pub reverse: bool,
     pub min_track_radius: f64,
+    /// Scroll movement is held back this many frames; whatever is still held
+    /// when the finger lifts is dropped, so lift-off wobble doesn't scroll.
+    pub lift_ignore_frames: usize,
+    /// Rotation (degrees) before a ring touch commits to scrolling. Until then,
+    /// moving inward out of the ring hands the touch back to the pointer.
+    pub commit_degrees: f64,
+    /// How far inside `ring_start` the finger must move for that hand-off.
+    pub ring_exit_margin: f64,
 }
 
 /// Wheel movement to emit: hi-res units (120 per notch) and whole notches.
@@ -74,8 +89,10 @@ pub struct Scroller {
     geom: Geometry,
     set: Settings,
     last_angle: Option<f64>,
-    hires_acc: f64, // pending hi-res units not yet emitted
-    notch_acc: i32, // emitted hi-res units not yet reported as full notches
+    hires_acc: f64,         // pending hi-res units not yet emitted
+    notch_acc: i32,         // emitted hi-res units not yet reported as full notches
+    pending: VecDeque<f64>, // recent angle deltas held back from emission
+    committed: bool,        // rotated far enough to be a deliberate scroll
 }
 
 impl Scroller {
@@ -86,6 +103,8 @@ impl Scroller {
             last_angle: None,
             hires_acc: 0.0,
             notch_acc: 0,
+            pending: VecDeque::new(),
+            committed: false,
         }
     }
 
@@ -100,10 +119,29 @@ impl Scroller {
         self.polar(x, y).0 >= self.set.ring_start
     }
 
+    /// Moved far enough inward to no longer count as a ring touch.
+    pub fn left_ring(&self, x: i32, y: i32) -> bool {
+        self.polar(x, y).0 < self.set.ring_start - self.set.ring_exit_margin
+    }
+
+    pub fn committed(&self) -> bool {
+        self.committed
+    }
+
     pub fn start(&mut self, x: i32, y: i32) {
         self.last_angle = Some(self.polar(x, y).1);
         self.hires_acc = 0.0;
         self.notch_acc = 0;
+        self.pending.clear();
+        self.committed = self.set.commit_degrees <= 0.0;
+    }
+
+    /// The finger lifted: drop the held-back movement. Returns how many
+    /// degrees were dropped.
+    pub fn end(&mut self) -> f64 {
+        let dropped = self.pending.iter().sum();
+        self.pending.clear();
+        dropped
     }
 
     /// Returns the wheel movement for the finger moving to (x, y), if any.
@@ -115,6 +153,20 @@ impl Scroller {
         }
         let last = self.last_angle.replace(ang)?;
         let d = (ang - last + 180.0).rem_euclid(360.0) - 180.0; // shortest signed delta
+        // Delay each delta by a few frames so the last ones before lift-off,
+        // where the finger rolls and the contact centre shifts, can be dropped.
+        self.pending.push_back(d);
+        if !self.committed {
+            // Hold everything back until the rotation looks deliberate.
+            if self.pending.iter().sum::<f64>().abs() < self.set.commit_degrees {
+                return None;
+            }
+            self.committed = true;
+        }
+        let mut d = 0.0;
+        while self.pending.len() > self.set.lift_ignore_frames {
+            d += self.pending.pop_front().unwrap();
+        }
         // Touchpad Y grows downward, so positive d is clockwise on screen.
         // Clockwise -> scroll down -> negative wheel values.
         let sign = if self.set.reverse { 1.0 } else { -1.0 };
@@ -134,8 +186,62 @@ impl Scroller {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Idle,
+    /// Normal touch: everything goes to the clone.
     Pass,
+    /// Started in the ring but hasn't rotated far enough to scroll yet.
+    Ring,
     Scroll,
+}
+
+/// The pad's current key and axis values, so a touch that was held back can
+/// be handed to the clone as a fresh touch at its current position.
+#[derive(Default)]
+struct DeviceState {
+    keys: BTreeMap<u16, i32>,
+    abs: BTreeMap<u16, i32>,
+    mt: BTreeMap<i32, BTreeMap<u16, i32>>, // slot -> ABS_MT_* values
+    slot: i32,
+}
+
+impl DeviceState {
+    fn update(&mut self, ty: u16, code: u16, value: i32) {
+        if ty == EV_KEY {
+            self.keys.insert(code, value);
+        } else if ty == EV_ABS && code == ABS_MT_SLOT {
+            self.slot = value;
+        } else if ty == EV_ABS && (ABS_MT_SLOT..=ABS_MT_LAST).contains(&code) {
+            self.mt.entry(self.slot).or_default().insert(code, value);
+        } else if ty == EV_ABS {
+            self.abs.insert(code, value);
+        }
+    }
+
+    /// One frame that brings a device with nothing touching to this state.
+    fn snapshot(&self) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        for (slot, vals) in &self.mt {
+            if vals.get(&ABS_MT_TRACKING_ID).copied().unwrap_or(-1) == -1 {
+                continue;
+            }
+            out.push(InputEvent::new(EV_ABS, ABS_MT_SLOT, *slot));
+            out.extend(vals.iter().map(|(c, v)| InputEvent::new(EV_ABS, *c, *v)));
+        }
+        if !self.mt.is_empty() {
+            out.push(InputEvent::new(EV_ABS, ABS_MT_SLOT, self.slot));
+        }
+        out.extend(
+            self.abs
+                .iter()
+                .map(|(c, v)| InputEvent::new(EV_ABS, *c, *v)),
+        );
+        out.extend(
+            self.keys
+                .iter()
+                .filter(|(_, v)| **v != 0)
+                .map(|(c, v)| InputEvent::new(EV_KEY, *c, *v)),
+        );
+        out
+    }
 }
 
 /// What to do with one finished frame.
@@ -155,6 +261,7 @@ pub struct Router {
     y: Option<i32>,
     tools: [bool; 5],
     frame: Vec<InputEvent>,
+    state: DeviceState,
 }
 
 impl Router {
@@ -166,6 +273,7 @@ impl Router {
             y: None,
             tools: [false; 5],
             frame: Vec::new(),
+            state: DeviceState::default(),
         }
     }
 
@@ -184,6 +292,7 @@ impl Router {
         let (ty, code, value) = (ev.event_type().0, ev.code(), ev.value());
         if ty != EV_SYN {
             self.frame.push(ev);
+            self.state.update(ty, code, value);
             if ty == EV_ABS && code == ABS_X {
                 self.x = Some(value);
             } else if ty == EV_ABS && code == ABS_Y {
@@ -211,23 +320,52 @@ impl Router {
         if self.mode == Mode::Idle && touch_down {
             match (self.x, self.y) {
                 (Some(x), Some(y)) if self.fingers() <= 1 && self.scroller.in_ring(x, y) => {
-                    self.mode = Mode::Scroll;
                     self.scroller.start(x, y);
-                    out.note = Some(format!("scroll start at ({x},{y})"));
+                    if self.scroller.committed() {
+                        self.mode = Mode::Scroll;
+                        out.note = Some(format!("scroll start at ({x},{y})"));
+                    } else {
+                        self.mode = Mode::Ring;
+                        out.note = Some(format!("ring touch at ({x},{y})"));
+                    }
                 }
                 _ => self.mode = Mode::Pass,
             }
         }
 
-        if self.mode == Mode::Scroll {
-            if let (Some(x), Some(y)) = (self.x, self.y)
-                && let Some((wheel, d)) = self.scroller.moved(x, y)
-            {
-                out.wheel = Some(wheel);
-                out.note = Some(format!(
-                    "scroll d={d:+.1} hires={} notches={}",
-                    wheel.hires, wheel.notches
-                ));
+        if self.mode == Mode::Ring
+            && !touch_up
+            && let (Some(x), Some(y)) = (self.x, self.y)
+            && (self.fingers() > 1 || self.scroller.left_ring(x, y))
+        {
+            // Left the ring (or added a finger) before scrolling: a normal touch
+            // after all. Start it on the clone at the current position, so the
+            // pointer doesn't jump.
+            self.mode = Mode::Pass;
+            out.clone = Some(self.state.snapshot());
+            out.note = Some(format!("left ring at ({x},{y}): handing touch to pointer"));
+            return Some(out);
+        }
+
+        if matches!(self.mode, Mode::Ring | Mode::Scroll) {
+            // The lift frame's position is lift-off noise; don't scroll on it.
+            if !touch_up && let (Some(x), Some(y)) = (self.x, self.y) {
+                let moved = self.scroller.moved(x, y);
+                if self.mode == Mode::Ring && self.scroller.committed() {
+                    self.mode = Mode::Scroll;
+                    out.note = Some(format!("scroll start at ({x},{y})"));
+                }
+                if let Some((wheel, d)) = moved {
+                    out.wheel = Some(wheel);
+                    let note = format!(
+                        "scroll d={d:+.1} hires={} notches={}",
+                        wheel.hires, wheel.notches
+                    );
+                    out.note = Some(match out.note.take() {
+                        Some(start) => format!("{start}\n{note}"),
+                        None => note,
+                    });
+                }
             }
             // Still pass physical button presses through while scrolling.
             let buttons: Vec<_> = frame
@@ -240,8 +378,16 @@ impl Router {
         }
 
         if touch_up {
-            if self.mode == Mode::Scroll {
-                out.note = Some("scroll end".into());
+            let dropped = self.scroller.end();
+            match self.mode {
+                Mode::Scroll if dropped != 0.0 => {
+                    out.note = Some(format!(
+                        "scroll end (dropped {dropped:+.1} deg of lift-off movement)"
+                    ))
+                }
+                Mode::Scroll => out.note = Some("scroll end".into()),
+                Mode::Ring => out.note = Some("ring touch lifted before scrolling".into()),
+                _ => {}
             }
             self.mode = Mode::Idle;
         }
@@ -259,11 +405,21 @@ mod tests {
         rx: 2000.0,
         ry: 2000.0,
     };
+    /// Lift filtering and the ring hand-off off, so tests see raw scrolling.
     const SET: Settings = Settings {
         ring_start: 0.7,
         degrees_per_notch: 20.0,
         reverse: false,
         min_track_radius: 0.35,
+        lift_ignore_frames: 0,
+        commit_degrees: 0.0,
+        ring_exit_margin: 0.1,
+    };
+    /// The shipped defaults.
+    const DEFAULT_SET: Settings = Settings {
+        lift_ignore_frames: 2,
+        commit_degrees: 10.0,
+        ..SET
     };
 
     fn key(code: KeyCode, v: i32) -> InputEvent {
@@ -306,6 +462,15 @@ mod tests {
     }
     fn router() -> Router {
         Router::new(Scroller::new(GEOM, SET))
+    }
+    fn default_router() -> Router {
+        Router::new(Scroller::new(GEOM, DEFAULT_SET))
+    }
+    fn lift(r: &mut Router) -> Output {
+        frame(
+            r,
+            &[key(KeyCode::BTN_TOUCH, 0), key(KeyCode::BTN_TOOL_FINGER, 0)],
+        )
     }
 
     #[test]
@@ -451,5 +616,138 @@ mod tests {
             }
         }
         assert_eq!(total, -1);
+    }
+
+    #[test]
+    fn clipping_the_ring_then_moving_inward_moves_the_pointer() {
+        let mut r = default_router();
+        let out = touch_down(&mut r, at(0.75, 0.0), KeyCode::BTN_TOOL_FINGER);
+        assert_eq!(r.mode, Mode::Ring);
+        assert_eq!(out.clone, None, "held back until we know what it is");
+        let out = move_to(&mut r, at(0.65, 2.0)); // inside ring_start, not past the margin
+        assert_eq!((r.mode, out.clone, out.wheel), (Mode::Ring, None, None));
+
+        let (x, y) = at(0.5, 3.0);
+        let out = move_to(&mut r, (x, y));
+        assert_eq!(r.mode, Mode::Pass);
+        assert_eq!(out.wheel, None);
+        // A fresh touch at the current position, not a replay from the edge.
+        let mut got = out.clone.unwrap();
+        got.sort_by_key(|e| (e.event_type().0, e.code()));
+        let mut want = vec![
+            abs(ABS_X, x),
+            abs(ABS_Y, y),
+            key(KeyCode::BTN_TOUCH, 1),
+            key(KeyCode::BTN_TOOL_FINGER, 1),
+        ];
+        want.sort_by_key(|e| (e.event_type().0, e.code()));
+        assert_eq!(got, want);
+
+        // From here on it's an ordinary touch.
+        assert_eq!(move_to(&mut r, at(0.3, 3.0)).clone.unwrap().len(), 2);
+        assert_eq!(lift(&mut r).clone.unwrap().len(), 2);
+        assert_eq!(r.mode, Mode::Idle);
+    }
+
+    #[test]
+    fn ring_touch_scrolls_once_it_has_rotated_far_enough() {
+        let mut r = default_router();
+        touch_down(&mut r, at(0.9, 0.0), KeyCode::BTN_TOOL_FINGER);
+        for step in 1..=4 {
+            let out = move_to(&mut r, at(0.9, step as f64 * 2.0)); // up to 8 degrees
+            assert_eq!((r.mode, out.wheel), (Mode::Ring, None));
+        }
+        let out = move_to(&mut r, at(0.9, 10.0));
+        assert_eq!(r.mode, Mode::Scroll);
+        assert!(
+            out.wheel.is_some(),
+            "the held-back rotation is emitted on commit"
+        );
+        assert_eq!(out.clone, None);
+        // Once scrolling, drifting inward doesn't hand the touch over.
+        move_to(&mut r, at(0.4, 12.0));
+        assert_eq!(r.mode, Mode::Scroll);
+    }
+
+    #[test]
+    fn movement_just_before_lift_off_is_dropped() {
+        let mut r = default_router();
+        touch_down(&mut r, at(0.9, 0.0), KeyCode::BTN_TOOL_FINGER);
+        let mut hires = 0;
+        for step in 1..=18 {
+            if let Some(w) = move_to(&mut r, at(0.9, step as f64 * 5.0)).wheel {
+                hires += w.hires;
+            }
+        }
+        // The lift frame's own position is ignored too.
+        let (x, y) = at(0.9, 100.0);
+        let out = frame(
+            &mut r,
+            &[abs(ABS_X, x), abs(ABS_Y, y), key(KeyCode::BTN_TOUCH, 0)],
+        );
+        assert_eq!(out.wheel, None);
+        assert_eq!(
+            out.note.as_deref(),
+            Some("scroll end (dropped +10.0 deg of lift-off movement)")
+        );
+        // 90 degrees minus the last two 5 degree frames = 80 degrees.
+        assert!((hires + 480).abs() <= 1, "hires total {hires}");
+    }
+
+    #[test]
+    fn lifting_before_scrolling_does_nothing() {
+        let mut r = default_router();
+        touch_down(&mut r, at(0.9, 0.0), KeyCode::BTN_TOOL_FINGER);
+        move_to(&mut r, at(0.9, 5.0));
+        let out = lift(&mut r);
+        assert_eq!((out.clone, out.wheel), (None, None));
+        assert_eq!(r.mode, Mode::Idle);
+    }
+
+    #[test]
+    fn second_finger_before_scrolling_hands_over() {
+        let mut r = default_router();
+        touch_down(&mut r, at(0.9, 0.0), KeyCode::BTN_TOOL_FINGER);
+        let out = frame(
+            &mut r,
+            &[
+                key(KeyCode::BTN_TOOL_FINGER, 0),
+                key(KeyCode::BTN_TOOL_DOUBLETAP, 1),
+            ],
+        );
+        assert_eq!(r.mode, Mode::Pass);
+        let got = out.clone.unwrap();
+        assert!(got.contains(&key(KeyCode::BTN_TOOL_DOUBLETAP, 1)));
+        assert!(!got.iter().any(|e| e.code() == KeyCode::BTN_TOOL_FINGER.0));
+    }
+
+    #[test]
+    fn snapshot_includes_active_multitouch_slots() {
+        let mut st = DeviceState::default();
+        let mt_x = AbsoluteAxisCode::ABS_MT_POSITION_X.0;
+        for (c, v) in [
+            (ABS_MT_SLOT, 0),
+            (ABS_MT_TRACKING_ID, 7),
+            (mt_x, 100),
+            (ABS_MT_SLOT, 1),
+            (ABS_MT_TRACKING_ID, -1), // lifted earlier
+            (mt_x, 900),
+            (ABS_MT_SLOT, 0),
+            (ABS_X, 100),
+        ] {
+            st.update(EV_ABS, c, v);
+        }
+        st.update(EV_KEY, BTN_TOUCH, 1);
+        assert_eq!(
+            st.snapshot(),
+            vec![
+                abs(ABS_MT_SLOT, 0),
+                abs(mt_x, 100),
+                abs(ABS_MT_TRACKING_ID, 7),
+                abs(ABS_MT_SLOT, 0),
+                abs(ABS_X, 100),
+                key(KeyCode::BTN_TOUCH, 1),
+            ]
+        );
     }
 }
