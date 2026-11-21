@@ -161,7 +161,8 @@ def test_daemon(tmp):
         check([ev.value for ev in c if ev.code == e.BTN_TOUCH] == [1, 0], "...as one normal touch")
 
         # 3. Touch in the ring, 90 degrees clockwise: scrolls down 4 notches, pointer untouched.
-        #    The last 2 frames before lift-off (1 degree each) are dropped: 88 degrees.
+        #    The two click frames come between the rotation and the lift, so they're
+        #    the frames dropped at lift-off and the full 90 degrees scrolls.
         x, y = point(0.9, 0)
         emit(pad, [(e.EV_KEY, e.BTN_TOUCH, 1), (e.EV_KEY, e.BTN_TOOL_FINGER, 1), (e.EV_ABS, e.ABS_X, x), (e.EV_ABS, e.ABS_Y, y)])
         for step in range(1, 91):
@@ -174,7 +175,7 @@ def test_daemon(tmp):
         notches = sum(ev.value for ev in w if ev.code == e.REL_WHEEL)
         hires = sum(ev.value for ev in w if ev.code == e.REL_WHEEL_HI_RES)
         check(notches == -4, f"90 degrees clockwise = 4 notches down (got {notches})")
-        check(abs(hires + 528) <= 2, f"hi-res total about -528, lift-off frames dropped (got {hires})")
+        check(abs(hires + 540) <= 2, f"hi-res total about -540 (got {hires})")
         check([(ev.code, ev.value) for ev in c] == [(e.BTN_LEFT, 1), (e.BTN_LEFT, 0)],
               "ring touch only passes button clicks to the clone")
 
